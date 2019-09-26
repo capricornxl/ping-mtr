@@ -3,20 +3,17 @@ import sys
 import threading
 
 
-class KillThreading(threading.Thread):
+class ThreadingRunTime(threading.Thread):
     def __init__(self, *args, **kwargs):
         threading.Thread.__init__(self, *args, **kwargs)
         self.killed = False
 
     def start(self):
-        """Start the thread."""
         self.__run_backup = self.run
-        self.run = self.__run  # Force the Thread to install our trace.
+        self.run = self.__run
         threading.Thread.start(self)
 
     def __run(self):
-        """Hacked run function, which installs the
-        trace."""
         sys.settrace(self.globaltrace)
         self.__run_backup()
         self.run = self.__run_backup
@@ -42,7 +39,6 @@ def runtimer(runtime):
     运行时长定时器
     :return: runtimer stoped 终止执行
     """
-
     def timeout_decorator(func):
         def _new_func(oldfunc, result, oldfunc_args, oldfunc_kwargs):
             result.append(oldfunc(*oldfunc_args, **oldfunc_kwargs))
@@ -55,7 +51,7 @@ def runtimer(runtime):
                 'oldfunc_args': args,
                 'oldfunc_kwargs': kwargs
             }
-            thd = KillThreading(target=_new_func, args=(), kwargs=new_kwargs)
+            thd = ThreadingRunTime(target=_new_func, args=(), kwargs=new_kwargs)
             thd.start()
             thd.join(runtime)
             thd.kill()
@@ -64,9 +60,7 @@ def runtimer(runtime):
                 return str('runtimer stoped')
             else:
                 return str('runtimer stoped failed')
-
         _.__name__ = func.__name__
         _.__doc__ = func.__doc__
         return _
-
     return timeout_decorator
