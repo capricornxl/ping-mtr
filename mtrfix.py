@@ -9,24 +9,35 @@ import csv
 import os
 import sys
 import pandas
-import numpy
+from getopt import *
+
+
+def cprint(color, message):
+    """
+    :param color: 消息颜色
+    :param message 消息内容
+    :return: None
+    """
+    colors = {'red': 31, 'green': 32, 'yellow':33, 'blue': 34, 'dark_green': 36, 'default': 37}
+    if color in colors:
+        fore = colors[color]
+    else:
+        fore = 37
+    color = '\033[%d;%dm' % (1, fore)
+    print('%s%s\033[0m' % (color, message))
 
 
 class CheckIp(object):
 
-    def __init__(self, thd_sum=32, record_dir='record'):
+    def __init__(self, record_dir='record'):
         self.start_time = time.time()
         self.dt = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        self.thd_sum = thd_sum
-        self.sem = threading.Semaphore(self.thd_sum)
         self.record_dir = record_dir
-        self.basedir = os.path.dirname(os.path.abspath(__file__))
-        self.record_dir = os.path.join(self.basedir, record_dir)
 
     @staticmethod
     def create_ip_list():
-        with open("IPlist.txt", "r") as IPlists:
-            ip_readlines = IPlists.readlines()
+        with open(os.path.join(os.path.dirname(os.path.abspath('__file__')), "IPlist.txt"), "r") as f_ip_lists:
+            ip_readlines = f_ip_lists.readlines()
             ip_list = []
             for ip in ip_readlines:
                 if ip.strip('\n'):
@@ -113,11 +124,10 @@ class CheckIp(object):
         except Exception as e:
             print(str(e))
 
-    @staticmethod
-    def sum_check_result(csv_dir):
+    def sum_check_result(self):
         try:
-            read_csv_file = os.path.join(csv_dir, 'check_ip.csv')
-            result_csv_file = os.path.join(csv_dir, 'check_sum.csv')
+            read_csv_file = os.path.join(self.record_dir, 'check_ip.csv')
+            result_csv_file = os.path.join(self.record_dir, 'check_sum.csv')
             _csv_headers = ['ip', 'xmt', 'rcv', 'loss']
             df = pandas.DataFrame(pandas.read_csv(read_csv_file))
             ip_list = list(set(df.ip.values))
@@ -133,7 +143,7 @@ class CheckIp(object):
             raise str(e)
 
 
-class RunThreading(threading.Thread):
+class PingThreading(threading.Thread):
     def __init__(self, ip=None, num=None, r_dir='record'):
         threading.Thread.__init__(self)
         self._ip = ip
@@ -147,52 +157,103 @@ class RunThreading(threading.Thread):
 
 
 class MainThreading(threading.Thread):
-    def __init__(self):
+    def __init__(self, thd_num, timeout=None, record_dir='record'):
         threading.Thread.__init__(self)
         self.csv_headers = ['ip', 'xmt', 'rcv']
         self.time_stramp = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
-        self.thd_num = threading.Semaphore(32)
-        self.record_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.time_stramp)
+        self.thd_num = thd_num
+        self.timeout = timeout
+        self.record_dir = record_dir
         os.mkdir(self.record_dir)
 
     def run(self):
-        # 先写入IP记录的CSV 头部
-        with open(os.path.join(self.record_dir, 'check_ip.csv'), 'a+') as f_csv:
-            csv_ops = csv.writer(f_csv)
-            csv_ops.writerow(self.csv_headers)
-        f_csv.close()
+        try:
+            # 先写入IP记录的CSV 头部
+            with open(os.path.join(self.record_dir, 'check_ip.csv'), 'a+') as f_csv:
+                csv_ops = csv.writer(f_csv)
+                csv_ops.writerow(self.csv_headers)
+            f_csv.close()
+            if self.timeout is None:
+                n = 1
+                threads = [PingThreading(ip=ip, num=self.thd_num, r_dir=self.record_dir) for ip in
+                           CheckIp.create_ip_list()]
+                cprint("green", "主线程总计[%d]个任务" % len(threads))
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                    print('第%d个线程完成...' % n)
+                    n += 1
 
-        threads = [RunThreading(ip=ip, num=self.thd_num, r_dir=self.time_stramp) for ip in CheckIp.create_ip_list()]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+            else:
+                n, r = 1, 1
+                while True:
+                    cprint("red", '开始第%d次循环...' % r)
+                    threads = [PingThreading(ip=ip, num=self.thd_num, r_dir=self.record_dir) for ip in
+                               CheckIp.create_ip_list()]
+                    cprint("green", "主线程总计[%d]个任务" % len(threads))
+                    for t in threads:
+                        t.start()
+                    for t in threads:
+                        t.join()
+                        print('第%d个线程完成...' % n)
+                        n += 1
+                    r += 1
+                    time.sleep(1)
+
+        except Exception as e:
+            print(str(e))
 
 
 if __name__ == '__main__':
-    # csv_headers = ['ip', 'xmt', 'rcv']
-    # time_stramp = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
-    # thd_num = threading.Semaphore(32)
-    # record_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), time_stramp)
-    # os.mkdir(record_dir)
+    thd_num = 32
+    summary = False
+    runtime = None
+    argv = sys.argv[1:]
+    time_stramp = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
+    record_dir = os.path.join(os.path.dirname(os.path.abspath('__file__')), time_stramp)
 
+    try:
+        opts, args = getopt(argv, "hn:t:s")
+    except GetoptError:
+        cprint("green", """参数说明：
+    -n <number> 指定线程并发数，单位数字。
+    -t <number> 指定循环运行时间，单位秒。不指定-t，只执行一次。
+    -s 是否对数据进行统计
+    """)
+        sys.exit(1)
+    except Exception as e:
+        cprint("red", '异常：%s' % str(e))
 
+    for opt, arg in opts:
+        if opt in ('-h',):
+            cprint("green", """参数说明：
+    -n <number> 指定线程并发数，单位数字。
+    -t <number> 指定循环运行时间，单位秒。不指定-t，只执行一次。
+    -s 是否对数据进行统计
+    """)
+            sys.exit()
+        elif opt in ('-n',):
+            thd_num = int(arg)
+        elif opt in ('-s',):
+            summary = True
+        elif opt in ('-t',):
+            runtime = int(arg)
 
+    num = threading.Semaphore(thd_num)
+    if runtime is not None:
+        cprint("blue", "本次运行指定运行时长[%d]秒..." % runtime)
 
-    # try:
-    #     read_csv_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'check_ip.csv')
-    #     result_csv_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'check_sum.csv')
-    #     _csv_headers = ['IP', 'Send Packages', 'Receive Packages', 'Loss %']
-    #     df = pandas.DataFrame(pandas.read_csv(read_csv_file))
-    #     ip_list = list(set(df.ip.values))
-    #     with open(result_csv_file, 'w+') as f_sum:
-    #         csv_ops = csv.writer(f_sum)
-    #         csv_ops.writerow(_csv_headers)
-    #         for ip in ip_list:
-    #             xmt_sum = (df.loc[df["ip"] == ip].head())['xmt'].sum()
-    #             rcv_sum = (df.loc[df["ip"] == ip].head())['rcv'].sum()
-    #             csv_ops.writerow([ip, xmt_sum, rcv_sum, "{:.2f}%".format((xmt_sum - rcv_sum) / xmt_sum * 100)])
-    # except Exception as e:
-    #     raise str(e)
+    run = MainThreading(thd_num=num, timeout=runtime, record_dir=record_dir)
+    cprint("blue", "主线程开始：")
+    run.setDaemon(True)
+    run.start()
+    run.join(timeout=runtime)
+    cprint("green", "所有任务己完成...")
+    run.isAlive()
+    cprint("blue", "主线程结束...\n")
 
-    MainThreading().run()
+    if summary:
+        cprint("blue", "开始汇总数据：")
+        CheckIp(record_dir=record_dir).sum_check_result()
+        cprint("blue", "汇总数据完成...")
