@@ -257,3 +257,5 @@ if __name__ == '__main__':
         cprint("blue", "开始汇总数据：")
         CheckIp(record_dir=record_dir).sum_check_result()
         cprint("blue", "汇总数据完成...")
+
+    cprint("dark_green", "所有数据在目录[%s]" % record_dir)
