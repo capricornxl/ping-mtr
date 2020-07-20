@@ -2,10 +2,9 @@
 #ping执行次数
 count = 5
 #每次ping的间隔，单位毫秒
-wait = 200
+wait = 500
 #每次ping的超时时间，单位秒
 timeout = 1
-
 
 [mtr]
 #mtr程序所在路径，可以是绝对路径、相对路径

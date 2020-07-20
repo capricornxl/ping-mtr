@@ -53,22 +53,22 @@ import os
 import sys
 import pandas
 from getopt import getopt, GetoptError
-import platform
 import select
 import socket
 import struct
 import time
 import signal
+import traceback
 
 
 ICMP_ECHO_REQUEST = 8
 DEFAULT_TIMEOUT = 1
 DEFAULT_COUNT = 5
-DEFAULT_WAIT = 200
+DEFAULT_WAIT = 500
 
 
 def signal_handler(signum, frame):
-    print("\n(接受到Ctrl+C，等待线程退出.. %d)\n" % signum)
+    cprint("red", "接收到Ctrl+C，等待线程退出.. %d" % signum)
     if summary:
         cprint("blue", "开始汇总数据: ")
         CheckIp(record_dir=record_dir).sum_check_result()
@@ -201,21 +201,19 @@ class Pinger(object):
         sock.sendto(packet, (target_addr, 1))
 
     def ping_once(self):
-        global sock_fun
         icmp = socket.getprotobyname("icmp")
         try:
             sock_fun = socket.socket(socket.AF_INET, socket.SOCK_RAW, icmp)
-        except socket.error as e:
-            if e.errno == 1:
-                e.msg += "Socket ICMP报文只能通过超级管理用户进程发送"
-                raise socket.error(e.msg)
-        except Exception as e:
-            sock_fun.close()
-            print("Exception: %s" % str(e))
+        except socket.error as se:
+            if se.errno == 1:
+                se.msg += "Socket ICMP报文只能通过超级管理用户进程发送"
+                raise socket.error(se.msg)
+        except Exception as Ee:
+            cprint("red", "ping_once: %s" % str(Ee))
+            print(traceback.format_exc())
         get_id = os.getpid() & 0xFFFF
         self.send_icmp(sock_fun, get_id)
         delay = self.receive_icmp(sock_fun, get_id, self.timeout)
-        sock_fun.close()
         return delay
 
     @staticmethod
@@ -233,22 +231,24 @@ class Pinger(object):
                 sent += 1
                 # unit: Second
                 delay = self.ping_once()
-            except socket.gaierror as e:
+            except socket.gaierror as ge:
                 status = "Error"
-                print("Ping failed. (socket error: '%s')" % str(e))
+                print("Ping failed. (socket error: '%s')" % str(ge))
+                print(traceback.format_exc())
                 break
             if delay is None:
-                continue
+                pass
             else:
                 rcvd += 1
                 time.sleep(self.wait / 1000)
         if rcvd == 0:
             status = "Failed"
-        return dict({"Status": status, "Sent": sent, "Rcvd": rcvd, "Loss": "{:.2f}%" .format(self.get_loss(sent, rcvd))})
+        rtime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        return dict({"Status": status, "Time": rtime, "Sent": sent, "Rcvd": rcvd, "Loss": "{:.2f}%" .format(self.get_loss(sent, rcvd))})
 
 
 class CheckIp(object):
-    def __init__(self, record_dir='record'):
+    def __init__(self, record_dir=run_path()):
         self.start_time = time.time()
         self.dt = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
         self.record_dir = record_dir
@@ -261,22 +261,24 @@ class CheckIp(object):
         """
         result_list = []
         try:
+            pstart_time = time.time()
             c = configparser.ConfigParser()
             c.read(os.path.join(run_path(), 'config'))
             count = int(c.get('ping', 'count'))
             wait = int(c.get('ping', 'wait'))
             timeout = int(c.get('ping', 'timeout'))
-            start_time = time.time()
             ping_result = Pinger(host=ip, count=count, wait=wait, timeout=timeout).ping()
-            end_time = time.time()
-            cprint("blue", "IP：%s 执行[ping_check]耗时： %s秒 " % (ip, round((end_time - start_time), 3)))
+            pend_time = time.time()
+            cprint("blue", "IP：%s 执行[ping_check]耗时： %s秒 " % (ip, round((pend_time - pstart_time), 3)))
             return ping_result
         except configparser.Error as ce:
             cprint("red", "config配置文件中[ping]配置参数存在错误：")
             print(str(ce))
+            print(traceback.format_exc())
             sys.exit(1)
-        except Exception as e:
-            print(str(e))
+        except Exception as pe:
+            cprint("red", "ping_check: %s" % str(pe))
+            print(traceback.format_exc())
 
     @staticmethod
     def mtr_check(ip):
@@ -286,7 +288,7 @@ class CheckIp(object):
         """
         result_list = []
         try:
-            start_time = time.time()
+            mstart_time = time.time()
             c = configparser.ConfigParser()
             c.read(os.path.join(run_path(), 'config'))
             command = [c.get('mtr', 'path'), ip] + c.get('mtr', 'paras').split(' ')
@@ -296,15 +298,15 @@ class CheckIp(object):
             for line in stdout, stderr:
                 if line:
                     result_list.append(line.strip('\n'))
-            end_time = time.time()
-            cprint("blue", "IP：%s 执行[mtr_check]耗时： %s秒 " % (ip, round((end_time - start_time), 3)))
+            mend_time = time.time()
+            cprint("blue", "IP：%s 执行[mtr_check]耗时： %s秒 " % (ip, round((mend_time - mstart_time), 3)))
             return dict({'Status': exit_code, 'result': result_list})
         except configparser.Error as ce:
             cprint("red", "config配置文件中[ping]配置参数存在错误：")
             print(str(ce))
             sys.exit(1)
         except FileNotFoundError as se:
-            print("系统中找到mtr，请确认mtr是否己安装或指定的mtr路径有误。")
+            print("可执行路径中未找到mtr，请确认mtr是否己安装或指定的mtr路径有误。")
             sys.exit(1)
         except subprocess.TimeoutExpired as se:
             print("IP:%s, subprocess.TimeoutExpired" % ip)
@@ -314,38 +316,41 @@ class CheckIp(object):
             print(str(se))
         except subprocess.SubprocessError as se:
             print(str(se))
-        except Exception as e:
-            print(str(e))
+            print(traceback.format_exc())
+        except Exception as me:
+            cprint("red", "mtr_check: %s" % str(me))
+            print(traceback.format_exc())
 
     def run_ping(self, ip):
         try:
-            start_time = time.time()
+            rstart_time = time.time()
             with open(os.path.join(self.record_dir, 'check-ip-record.csv'), 'a+') as f_csv, \
                     open(os.path.join(self.record_dir, 'mtr-ip-check.log'), 'a+') as f_mtr:
                 csv_ops = csv.writer(f_csv)
                 ping_ip_result = self.ping_check(ip)
                 if ping_ip_result:
-                    csv_ops.writerow([ip, ping_ip_result['Sent'], ping_ip_result['Rcvd'], ping_ip_result['Loss']])
+                    csv_ops.writerow([ping_ip_result['Time'], ip, ping_ip_result['Sent'], ping_ip_result['Rcvd'], ping_ip_result['Loss']])
                 if ping_ip_result['Status'] is not "Success":
                     mtr_ip_result = self.mtr_check(ip)
                     if mtr_ip_result['Status'] == 0:
                         print('-' * 120, file=f_mtr)
-                        print(self.dt, '\t', ip, ' Run mtr result: ', file=f_mtr)
+                        print(self.dt, '\t', ip, ' 执行Mtr的结果: ', file=f_mtr)
                         for mtr_line in mtr_ip_result['result']:
                             if mtr_line:
                                 print(mtr_line, file=f_mtr)
                         print('-' * 120, file=f_mtr)
                     else:
-                        print(self.dt, '\t', ip, ' Run mtr error')
+                        print(self.dt, '\t', ip, ' 执行Mtr出错...')
                         print('-' * 120, file=f_mtr)
             f_mtr.close()
             f_csv.close()
-            end_time = time.time()
-            cprint("blue", "IP：%s的所在子线程总任务执行[ping_check、mtr_check]完毕，耗时： %s秒 " % (ip, round((end_time - start_time), 3)))
+            rend_time = time.time()
+            cprint("blue", "IP：%s的所在子线程总任务执行[ping_check、mtr_check]完毕，耗时： %s秒 " % (ip, round((rend_time - rstart_time), 3)))
         except FileNotFoundError:
             cprint("red", "IP: %s, 写入文件时出现FileNotFoundError" % ip)
-        except Exception as e:
-            print(str(e))
+        except Exception as re:
+            cprint("red", "run_ping: %s" % str(re))
+            print(traceback.format_exc())
 
     def sum_check_result(self):
         try:
@@ -362,25 +367,27 @@ class CheckIp(object):
                     rcvd_sum = int((df.loc[df["IP"] == ip].head())['Rcvd'].sum())
                     csv_ops.writerow([ip, sent_sum, rcvd_sum, "{:.2f}%".format((sent_sum - rcvd_sum) / sent_sum * 100)])
             f_sum.close()
-        except Exception as e:
-            print(str(e))
+        except Exception as scre:
+            cprint("red", "sum_check_result: %s" % str(scre))
+            print(traceback.format_exc())
 
 
 def create_ip_list(file):
     try:
-        start_time = time.time()
+        cstart_time = time.time()
         with open(file, "r") as f_ip_lists:
             ip_readlines = f_ip_lists.readlines()
             ip_list = []
             for ip in ip_readlines:
                 if ip.strip('\n'):
                     ip_list.append(ip.strip())
-            end_time = time.time()
-            cprint("blue", "读取文件创建IP列表，耗时： %s秒 " % round((end_time - start_time), 3))
+            cend_time = time.time()
+            cprint("blue", "读取文件创建IP列表，耗时： %s秒 " % round((cend_time - cstart_time), 3))
             return ip_list
 
-    except Exception as e:
-        cprint("red", str(e))
+    except Exception as cile:
+        cprint("red", "create_ip_list: %s" % str(cile))
+        print(traceback.format_exc())
 
 
 class PingThreading(threading.Thread):
@@ -401,7 +408,7 @@ class PingThreading(threading.Thread):
 class MainThreading(threading.Thread):
     def __init__(self, thd_num, timeout=None, record_dir='record', ip_file=DEFAULT_IP_FILE):
         threading.Thread.__init__(self)
-        self.csv_headers = ['IP', 'Sent', 'Rcvd', 'Loss']
+        self.csv_headers = ['Time', 'IP', 'Sent', 'Rcvd', 'Loss']
         self.time_stramp = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
         self.thd_num = thd_num
         self.timeout = timeout
@@ -443,7 +450,8 @@ class MainThreading(threading.Thread):
                     time.sleep(1)
 
         except Exception as e:
-            print(str(e))
+            cprint("red", str(e))
+            print(traceback.format_exc())
 
 
 if __name__ == '__main__':
@@ -470,7 +478,7 @@ paras = -c 3 -r --no-dns
     start_time = time.time()
     thd_num = 32
     summary = False
-    runtime = None
+    run_time = None
     ip_file = os.path.join(run_path(), 'iplist')
     argv = sys.argv[1:]
     time_stramp = datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')
@@ -491,42 +499,41 @@ paras = -c 3 -r --no-dns
         sys.exit(1)
     except Exception as e:
         cprint("red", '异常: %s' % str(e))
+        print(traceback.format_exc())
 
     for opt, arg in opts:
         if opt in ('-h',):
             cprint("green", """
-    在iplist文件中写入需要检测的IP地址，每行一个
-    再运行本脚本，脚本会自动对每个IP做PING检测，如果IP检测不通则会执行MTR，并记录MTR到文件。
-    
-    参数说明: 
-    -n <number> 指定线程并发数，单位数字。
-    -t <number> 指定运行时间，单位秒。不指定-t，只执行一次。（指定运行时间会在指定时间内循环对iplist列表做检测）
-    -s 是否对IP ping的数据进行统计，主要统计每个IP总体的发送包、接收包，丢包率情况
-    """)
+config文件是配置文件，里面有一些配置参数，可自行定义。
+在iplist文件中写入需要检测的IP地址，每行一个。
+脚本会自动对每个IP做PING检测，如果IP检测不通则会执行MTR，并记录MTR到文件。
+
+参数说明: 
+-n <number> 指定线程并发数，单位数字。
+-t <number> 指定运行时间，单位秒。不指定-t，只执行一次。（指定运行时间会在指定时间内循环对iplist列表做检测）
+-s 是否对IP ping的数据进行统计，主要统计每个IP总体的发送包、接收包，丢包率情况
+""")
             sys.exit()
         elif opt in ('-n',):
             thd_num = int(arg)
         elif opt in ('-s',):
             summary = True
         elif opt in ('-t',):
-            runtime = int(arg)
+            run_time = int(arg)
 
     num = threading.Semaphore(thd_num)
-    if runtime is not None:
-        cprint("blue", "本次运行指定运行时长[%d]秒..." % runtime)
-
-    # 处理 Ctrl-C
+    if run_time is not None:
+        cprint("blue", f"本次运行指定运行时长[{run_time:d}]秒...")
     signal.signal(signal.SIGINT, signal_handler)
     if hasattr(signal, "SIGBREAK"):
-        # 处理Ctrl-Break，例如在Windows下
         signal.signal(signal.SIGBREAK, signal_handler)
-    run = MainThreading(thd_num=num, timeout=runtime, record_dir=record_dir)
+    run = MainThreading(thd_num=num, timeout=run_time, record_dir=record_dir)
     cprint("blue", "主线程开始: ")
     cprint("blue", "可使用Ctrl+C随时终止任务 ")
     cprint("blue", "当前线程数: %s" % thd_num)
     run.setDaemon(True)
     run.start()
-    run.join(timeout=runtime)
+    run.join(timeout=run_time)
     cprint("green", "所有任务己完成...")
     run.isAlive()
     cprint("blue", "主线程结束...\n")
